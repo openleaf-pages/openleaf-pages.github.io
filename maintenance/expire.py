@@ -39,8 +39,11 @@ entry=rows.get('public-lifecycle.json')
 if not entry:raise SystemExit('Missing public lifecycle')
 blob=api('GET','git/blobs/'+entry['sha'])
 manifest=json.loads(base64.b64decode(blob['content']))
-if set(manifest)!={'version','sites'} or manifest['version']!=1 or not isinstance(manifest['sites'],dict):
+if set(manifest) not in ({'version','sites'}, {'version','sites','expired_sites'}) or manifest['version']!=1 or not isinstance(manifest['sites'],dict):
     raise SystemExit('Invalid public lifecycle')
+prior_expired=manifest.get('expired_sites',[])
+if not isinstance(prior_expired,list) or len(set(prior_expired))!=len(prior_expired) or any(not isinstance(x,str) or not OPAQUE.fullmatch(x) for x in prior_expired) or set(prior_expired)&set(manifest['sites']):
+    raise SystemExit('Invalid expired sites')
 now=time.time();expired=[]
 for site,value in manifest['sites'].items():
     if not OPAQUE.fullmatch(site) or not isinstance(value,dict) or set(value)!={'expires_at'}:
@@ -52,8 +55,12 @@ for site,value in manifest['sites'].items():
 if expired:
     prefixes=tuple('dist/s/'+site+'/' for site in expired)
     changes=[{'path':name,'mode':'100644','type':'blob','sha':None}
-             for name in rows if name.startswith(prefixes)]
+             for name in rows if name.startswith(prefixes) and name not in {'dist/s/'+site+'/index.html' for site in expired}]
     for site in expired:del manifest['sites'][site]
+    manifest['expired_sites']=sorted(set(prior_expired)|set(expired))
+    landing='<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网页已到期</title><style>body{font:17px/1.7 system-ui;max-width:34em;margin:15vh auto;padding:24px;color:#263c32}</style><h1>网页已到期</h1><p>原网址和作品仍保留。创建者可回到自己的 Kai 原会话，发送“续期这个网页”并附上此链接。</p><p>续期后可继续使用原网址，无需重新制作。</p></html>\n'.encode()
+    landing_blob=api('POST','git/blobs',{'encoding':'base64','content':base64.b64encode(landing).decode()})['sha']
+    changes += [{'path':'dist/s/'+site+'/index.html','mode':'100644','type':'blob','sha':landing_blob} for site in expired]
     body=(json.dumps(manifest,sort_keys=True,separators=(',',':'))+'\n').encode()
     manifest_blob=api('POST','git/blobs',{'encoding':'base64','content':base64.b64encode(body).decode()})['sha']
     changes.append({'path':'public-lifecycle.json','mode':'100644','type':'blob','sha':manifest_blob})
@@ -73,6 +80,8 @@ if expired:
         target=ROOT/'dist'/'s'/site
         if target.is_symlink():raise SystemExit('Unsafe static directory')
         if target.exists():shutil.rmtree(target)
+        target.mkdir(parents=True)
+        (target/'index.html').write_bytes(landing)
     (ROOT/'public-lifecycle.json').write_bytes(body)
     head=new_commit
 if api('GET','git/ref/heads/main')['object']['sha']!=head:
