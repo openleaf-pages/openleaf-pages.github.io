@@ -20,7 +20,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment_retry.outputs.page_url || steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -39,4 +39,12 @@ jobs:
           retention-days: 1
       - name: Deploy current static artifact
         id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - name: Wait before retrying the same artifact
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 5
+      - name: Retry current static artifact
+        id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
